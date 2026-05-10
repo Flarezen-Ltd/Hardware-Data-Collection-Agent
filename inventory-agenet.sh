@@ -3,27 +3,26 @@
 # =========================================================
 # MetroVPS Hardware Inventory Agent
 #
-# Usage:
-#   ./inventory-agent.sh <SERVER_TOKEN>
-#
-# Example:
-#   ./inventory-agent.sh abc123xyz
-#
 # Features:
-# - Collects hardware & system inventory
-# - Sends JSON to API endpoint
-# - Auto installs daily cronjob
-# - Works across most Linux distributions
+# - Self updating from remote URL
+# - Auto installs itself to /opt/metrovps/
+# - Sends inventory daily
+# - Auto installs cron
+# - Works on most Linux distributions
+#
+# Usage:
+#   curl -o install.sh https://your-domain.com/inventory-agent.sh
+#   chmod +x install.sh
+#   ./install.sh YOUR_SERVER_TOKEN
+#
 # =========================================================
 
 set +e
 export LC_ALL=C
 
 # ---------------------------------------------------------
-# Configuration
+# CONFIGURATION
 # ---------------------------------------------------------
-
-BASE_URL="https://invenetory-agent.metrovps.com/api/hardware-inventory"
 
 TOKEN="$1"
 
@@ -32,18 +31,24 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
-API_ENDPOINT="${BASE_URL}?token=${TOKEN}"
+# API Endpoint
+BASE_API_URL="https://invenetory-agent.metrovps.com/api/hardware-inventory"
 
-SCRIPT_PATH="$(realpath "$0" 2>/dev/null)"
+# Script Update URL
+SCRIPT_UPDATE_URL="https://raw.githubusercontent.com/Flarezen-Ltd/Hardware-Data-Collection-Agent/refs/heads/main/inventory-agenet.sh"
 
-if [ -z "$SCRIPT_PATH" ]; then
-    SCRIPT_PATH="$0"
-fi
+# Installation Path
+INSTALL_DIR="/opt/metrovps"
+INSTALL_SCRIPT="${INSTALL_DIR}/inventory-agent.sh"
 
+# Runtime
 TMP_JSON="/tmp/system_inventory_$$.json"
 
+# Final API URL
+API_ENDPOINT="${BASE_API_URL}?token=${TOKEN}"
+
 # ---------------------------------------------------------
-# Helper Functions
+# HELPER FUNCTIONS
 # ---------------------------------------------------------
 
 command_exists() {
@@ -66,15 +71,74 @@ trim() {
 }
 
 # ---------------------------------------------------------
-# Install Daily Cronjob
+# SELF INSTALL
+# ---------------------------------------------------------
+
+self_install() {
+
+    mkdir -p "$INSTALL_DIR"
+
+    CURRENT_SCRIPT="$(realpath "$0" 2>/dev/null)"
+
+    if [ -f "$CURRENT_SCRIPT" ] && [ "$CURRENT_SCRIPT" != "$INSTALL_SCRIPT" ]; then
+
+        cp "$CURRENT_SCRIPT" "$INSTALL_SCRIPT"
+        chmod +x "$INSTALL_SCRIPT"
+
+        echo "Installed agent to:"
+        echo "$INSTALL_SCRIPT"
+    fi
+}
+
+# ---------------------------------------------------------
+# SELF UPDATE
+# ---------------------------------------------------------
+
+self_update() {
+
+    echo "Checking for script updates..."
+
+    TMP_SCRIPT="/tmp/inventory-agent-update.sh"
+
+    if command_exists curl; then
+
+        curl -fsSL "$SCRIPT_UPDATE_URL" -o "$TMP_SCRIPT"
+
+    elif command_exists wget; then
+
+        wget -qO "$TMP_SCRIPT" "$SCRIPT_UPDATE_URL"
+
+    else
+        echo "curl or wget required for updates."
+        return
+    fi
+
+    if [ -s "$TMP_SCRIPT" ]; then
+
+        chmod +x "$TMP_SCRIPT"
+
+        cp "$TMP_SCRIPT" "$INSTALL_SCRIPT"
+
+        chmod +x "$INSTALL_SCRIPT"
+
+        echo "Agent updated successfully."
+    else
+        echo "Failed to download update."
+    fi
+
+    rm -f "$TMP_SCRIPT"
+}
+
+# ---------------------------------------------------------
+# INSTALL CRON
 # ---------------------------------------------------------
 
 install_cron() {
 
-    CRON_CMD="0 2 * * * ${SCRIPT_PATH} ${TOKEN} >/dev/null 2>&1"
+    CRON_CMD="0 2 * * * ${INSTALL_SCRIPT} ${TOKEN} >/dev/null 2>&1"
 
     (
-        crontab -l 2>/dev/null | grep -v "inventory-agent.sh"
+        crontab -l 2>/dev/null | grep -v "${INSTALL_SCRIPT}"
         echo "$CRON_CMD"
     ) | crontab -
 
@@ -83,17 +147,17 @@ install_cron() {
 }
 
 # ---------------------------------------------------------
-# Basic System Info
+# BASIC SYSTEM INFO
 # ---------------------------------------------------------
 
 HOSTNAME=$(hostname 2>/dev/null || echo "")
 FQDN=$(hostname -f 2>/dev/null || echo "")
 KERNEL=$(uname -r 2>/dev/null || echo "")
 ARCH=$(uname -m 2>/dev/null || echo "")
-UPTIME=$(uptime -p 2>/dev/null || cat /proc/uptime 2>/dev/null || echo "")
+UPTIME=$(uptime -p 2>/dev/null || echo "")
 
 # ---------------------------------------------------------
-# OS Information
+# OS INFO
 # ---------------------------------------------------------
 
 OS_NAME=""
@@ -105,7 +169,7 @@ if [ -f /etc/os-release ]; then
 fi
 
 # ---------------------------------------------------------
-# Virtualization
+# VIRTUALIZATION
 # ---------------------------------------------------------
 
 VIRTUALIZATION=""
@@ -115,7 +179,7 @@ if command_exists systemd-detect-virt; then
 fi
 
 # ---------------------------------------------------------
-# Hardware Info
+# HARDWARE INFO
 # ---------------------------------------------------------
 
 SERVER_MODEL=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "")
@@ -127,7 +191,7 @@ MOTHERBOARD=$(cat /sys/class/dmi/id/board_name 2>/dev/null || echo "")
 MOTHERBOARD_VENDOR=$(cat /sys/class/dmi/id/board_vendor 2>/dev/null || echo "")
 
 # ---------------------------------------------------------
-# CPU Info
+# CPU INFO
 # ---------------------------------------------------------
 
 CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2- | trim)
@@ -142,7 +206,7 @@ if command_exists lscpu; then
 fi
 
 # ---------------------------------------------------------
-# RAM Info
+# MEMORY INFO
 # ---------------------------------------------------------
 
 TOTAL_RAM=$(awk '/MemTotal/ {printf "%.2f GB", $2/1024/1024}' /proc/meminfo 2>/dev/null)
@@ -150,7 +214,7 @@ AVAILABLE_RAM=$(awk '/MemAvailable/ {printf "%.2f GB", $2/1024/1024}' /proc/memi
 SWAP_TOTAL=$(awk '/SwapTotal/ {printf "%.2f GB", $2/1024/1024}' /proc/meminfo 2>/dev/null)
 
 # ---------------------------------------------------------
-# Storage
+# STORAGE
 # ---------------------------------------------------------
 
 STORAGE_JSON="[]"
@@ -160,7 +224,7 @@ if command_exists lsblk; then
 fi
 
 # ---------------------------------------------------------
-# Network
+# NETWORK
 # ---------------------------------------------------------
 
 NETWORK_JSON="[]"
@@ -179,7 +243,7 @@ if command_exists ip; then
 fi
 
 # ---------------------------------------------------------
-# Public IP
+# PUBLIC IP
 # ---------------------------------------------------------
 
 PUBLIC_IP=""
@@ -191,27 +255,7 @@ elif command_exists wget; then
 fi
 
 # ---------------------------------------------------------
-# Docker Info
-# ---------------------------------------------------------
-
-DOCKER_VERSION=""
-
-if command_exists docker; then
-    DOCKER_VERSION=$(docker --version 2>/dev/null)
-fi
-
-# ---------------------------------------------------------
-# GPU Info
-# ---------------------------------------------------------
-
-GPU_INFO=""
-
-if command_exists lspci; then
-    GPU_INFO=$(lspci 2>/dev/null | grep -Ei 'vga|3d|display')
-fi
-
-# ---------------------------------------------------------
-# Build JSON
+# BUILD JSON
 # ---------------------------------------------------------
 
 cat > "$TMP_JSON" <<EOF
@@ -262,67 +306,42 @@ cat > "$TMP_JSON" <<EOF
     "interfaces": $NETWORK_JSON
   },
 
-  "storage": $STORAGE_JSON,
-
-  "gpu": "$(json_escape "$GPU_INFO")",
-
-  "docker": "$(json_escape "$DOCKER_VERSION")"
+  "storage": $STORAGE_JSON
 }
 EOF
 
 # ---------------------------------------------------------
-# Send JSON to API
+# SEND INVENTORY
 # ---------------------------------------------------------
 
-echo "Sending inventory to:"
-echo "$API_ENDPOINT"
-
-HTTP_CODE=""
+echo "Sending inventory..."
 
 if command_exists curl; then
 
-    HTTP_CODE=$(curl -s \
-        -o /tmp/inventory_response.txt \
-        -w "%{http_code}" \
+    curl -s \
         -X POST "$API_ENDPOINT" \
         -H "Content-Type: application/json" \
-        --data @"$TMP_JSON")
+        --data @"$TMP_JSON"
 
 elif command_exists wget; then
 
     wget \
         --header="Content-Type: application/json" \
         --post-file="$TMP_JSON" \
-        -O /tmp/inventory_response.txt \
+        -O - \
         "$API_ENDPOINT"
-
-    HTTP_CODE=$?
-
-else
-    echo "curl or wget is required."
-    exit 1
 fi
 
-# ---------------------------------------------------------
-# Output Result
-# ---------------------------------------------------------
-
-echo "HTTP Status: $HTTP_CODE"
-
-if [ -f /tmp/inventory_response.txt ]; then
-    echo "Response:"
-    cat /tmp/inventory_response.txt
-    echo
-fi
+echo
+echo "Inventory sent."
 
 # ---------------------------------------------------------
-# Install Cron Automatically
+# MAIN
 # ---------------------------------------------------------
 
+self_install
+self_update
 install_cron
 
-# ---------------------------------------------------------
 # Cleanup
-# ---------------------------------------------------------
-
 rm -f "$TMP_JSON"
