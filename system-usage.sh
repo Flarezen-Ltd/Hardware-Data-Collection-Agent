@@ -55,10 +55,40 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # DETECT MAIN INTERFACE
 # ---------------------------------------------------------
 
-INTERFACE=$(ip route 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+get_physical_interface() {
 
+    for IFACE in $(ls /sys/class/net); do
+
+        # Skip loopback
+        [ "$IFACE" = "lo" ] && continue
+
+        # Must be UP
+        STATE=$(cat /sys/class/net/$IFACE/operstate 2>/dev/null)
+
+        [ "$STATE" != "up" ] && continue
+
+        # Skip virtual interfaces
+        if [ ! -d "/sys/class/net/$IFACE/device" ]; then
+            continue
+        fi
+
+        # Skip bridges/bonds/docker/veth/tun/tap
+        case "$IFACE" in
+            docker*|veth*|br*|virbr*|vmbr*|bond*|tun*|tap*)
+                continue
+            ;;
+        esac
+
+        echo "$IFACE"
+        return
+    done
+}
+
+INTERFACE=$(get_physical_interface)
+
+# Fallback
 if [ -z "$INTERFACE" ]; then
-    INTERFACE=$(ls /sys/class/net | grep -v lo | head -n1)
+    INTERFACE=$(ip route 2>/dev/null | awk '/default/ {print $5}' | head -n1)
 fi
 
 # ---------------------------------------------------------
@@ -120,6 +150,7 @@ TX_BYTES=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes 2>/dev/null || echo
 RX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $RX_BYTES/1024/1024}")
 
 TX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $TX_BYTES/1024/1024}")
+
 
 # ---------------------------------------------------------
 # NETWORK SPEED
