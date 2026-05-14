@@ -1,136 +1,124 @@
 #!/usr/bin/env bash
 
 # =========================================================
-# Universal Linux Server Monitoring Script
-# Added:
-# - Real-time RX/TX network speed (Mbps)
+# Ultra Lightweight Linux Monitoring Script
+#
+# Features:
+# - Minimal CPU usage
+# - No sleep
+# - No top/free/vmstat
+# - Uses only /proc and /sys
+# - Works on almost all Linux distributions
+#
+# Collects:
+# - CPU Usage %
+# - RAM Usage
+# - Disk Usage
+# - Network Total Usage
+# - Network Current RX/TX Rate
 # =========================================================
 
 API_URL="https://invenetory-agent.metrovps.com/api/system/usage/collect"
 
-HOSTNAME=$(hostname 2>/dev/null || echo "unknown")
+STATE_FILE="/tmp/monitor_net_state"
+CPU_STATE_FILE="/tmp/monitor_cpu_state"
+
+HOSTNAME=$(hostname)
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# =========================================================
+# Detect Main Interface
+# =========================================================
+INTERFACE=$(ip route 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+
+if [ -z "$INTERFACE" ]; then
+    INTERFACE=$(ls /sys/class/net | grep -v lo | head -n1)
+fi
 
 # =========================================================
 # CPU Usage
 # =========================================================
-get_cpu_usage() {
+read cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
 
-    CPU_IDLE=$(top -bn1 2>/dev/null | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print int($1)}')
+TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
+IDLE=$((idle + iowait))
 
-    if [ -z "$CPU_IDLE" ]; then
-        CPU_IDLE=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $15}')
+CPU_USAGE="0"
+
+if [ -f "$CPU_STATE_FILE" ]; then
+
+    read PREV_TOTAL PREV_IDLE < "$CPU_STATE_FILE"
+
+    DIFF_TOTAL=$((TOTAL - PREV_TOTAL))
+    DIFF_IDLE=$((IDLE - PREV_IDLE))
+
+    if [ "$DIFF_TOTAL" -gt 0 ]; then
+        CPU_USAGE=$(awk "BEGIN {printf \"%.2f\", (1 - $DIFF_IDLE/$DIFF_TOTAL) * 100}")
     fi
+fi
 
-    [ -z "$CPU_IDLE" ] && CPU_IDLE=0
-
-    echo $((100 - CPU_IDLE))
-}
-
-CPU_USAGE=$(get_cpu_usage)
+echo "$TOTAL $IDLE" > "$CPU_STATE_FILE"
 
 # =========================================================
 # Memory Usage
 # =========================================================
-if command -v free >/dev/null 2>&1; then
+MEM_TOTAL=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+MEM_AVAILABLE=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
 
-    MEM_TOTAL=$(free -m | awk '/Mem:/ {print $2}')
-    MEM_USED=$(free -m | awk '/Mem:/ {print $3}')
-    MEM_FREE=$(free -m | awk '/Mem:/ {print $4}')
-
-else
-
-    MEM_TOTAL=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-    MEM_FREE=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
-    MEM_USED=$((MEM_TOTAL - MEM_FREE))
-
-fi
-
-MEM_PERCENT=$(awk "BEGIN {printf \"%.2f\", ($MEM_USED/$MEM_TOTAL)*100}")
+MEM_USED=$((MEM_TOTAL - MEM_AVAILABLE))
 
 # =========================================================
 # Disk Usage
 # =========================================================
-DISK_TOTAL=$(df -h / | awk 'NR==2 {print $2}')
-DISK_USED=$(df -h / | awk 'NR==2 {print $3}')
-DISK_AVAIL=$(df -h / | awk 'NR==2 {print $4}')
-DISK_PERCENT=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+DISK_TOTAL=$(df -BM / | awk 'NR==2 {gsub("M","",$2); print $2}')
+DISK_USED=$(df -BM / | awk 'NR==2 {gsub("M","",$3); print $3}')
+DISK_AVAILABLE=$(df -BM / | awk 'NR==2 {gsub("M","",$4); print $4}')
 
 # =========================================================
-# Network Interface Detection
+# Network Total Counters
 # =========================================================
-get_default_interface() {
+RX_BYTES=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes 2>/dev/null || echo 0)
+TX_BYTES=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes 2>/dev/null || echo 0)
 
-    IFACE=$(ip route 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+RX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $RX_BYTES/1024/1024}")
+TX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $TX_BYTES/1024/1024}")
 
-    if [ -z "$IFACE" ]; then
-        IFACE=$(route -n 2>/dev/null | awk '/UG/ {print $8}' | head -n1)
+# =========================================================
+# Network Speed Calculation
+# =========================================================
+RX_MBPS="0"
+TX_MBPS="0"
+
+CURRENT_TIME=$(date +%s)
+
+if [ -f "$STATE_FILE" ]; then
+
+    read OLD_RX OLD_TX OLD_TIME < "$STATE_FILE"
+
+    TIME_DIFF=$((CURRENT_TIME - OLD_TIME))
+
+    if [ "$TIME_DIFF" -gt 0 ]; then
+
+        RX_DIFF=$((RX_BYTES - OLD_RX))
+        TX_DIFF=$((TX_BYTES - OLD_TX))
+
+        RX_MBPS=$(awk "BEGIN {printf \"%.2f\", ($RX_DIFF * 8) / $TIME_DIFF / 1024 / 1024}")
+        TX_MBPS=$(awk "BEGIN {printf \"%.2f\", ($TX_DIFF * 8) / $TIME_DIFF / 1024 / 1024}")
+
     fi
-
-    if [ -z "$IFACE" ]; then
-        IFACE=$(ls /sys/class/net | grep -v lo | head -n1)
-    fi
-
-    echo "$IFACE"
-}
-
-INTERFACE=$(get_default_interface)
-
-# =========================================================
-# Network Total Usage
-# =========================================================
-RX_BYTES_TOTAL=0
-TX_BYTES_TOTAL=0
-
-if [ -n "$INTERFACE" ] && [ -d "/sys/class/net/$INTERFACE" ]; then
-
-    RX_BYTES_TOTAL=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes 2>/dev/null || echo 0)
-    TX_BYTES_TOTAL=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes 2>/dev/null || echo 0)
-
 fi
 
-RX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $RX_BYTES_TOTAL/1024/1024}")
-TX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $TX_BYTES_TOTAL/1024/1024}")
-
-# =========================================================
-# Real-time Network Speed
-# Measures over 1 second
-# =========================================================
-RX1=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes 2>/dev/null || echo 0)
-TX1=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes 2>/dev/null || echo 0)
-
-sleep 1
-
-RX2=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes 2>/dev/null || echo 0)
-TX2=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes 2>/dev/null || echo 0)
-
-RX_RATE_BPS=$((RX2 - RX1))
-TX_RATE_BPS=$((TX2 - TX1))
-
-# Convert to Mbps
-RX_RATE_MBPS=$(awk "BEGIN {printf \"%.2f\", ($RX_RATE_BPS * 8)/1024/1024}")
-TX_RATE_MBPS=$(awk "BEGIN {printf \"%.2f\", ($TX_RATE_BPS * 8)/1024/1024}")
+echo "$RX_BYTES $TX_BYTES $CURRENT_TIME" > "$STATE_FILE"
 
 # =========================================================
 # Load Average
 # =========================================================
-LOAD_AVG=$(cat /proc/loadavg | awk '{print $1" "$2" "$3}')
+LOAD_AVG=$(awk '{print $1" "$2" "$3}' /proc/loadavg)
 
 # =========================================================
 # Uptime
 # =========================================================
-UPTIME=$(uptime 2>/dev/null | sed 's/.*up \([^,]*\), .*/\1/' )
-
-# =========================================================
-# Public IP
-# =========================================================
-PUBLIC_IP=$(curl -s --max-time 5 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n')
-
-# =========================================================
-# OS Info
-# =========================================================
-OS_NAME=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
-KERNEL=$(uname -r)
+UPTIME_SECONDS=$(cut -d. -f1 /proc/uptime)
 
 # =========================================================
 # JSON Payload
@@ -139,12 +127,6 @@ JSON_PAYLOAD=$(cat <<EOF
 {
   "hostname": "$HOSTNAME",
   "timestamp": "$TIMESTAMP",
-  "public_ip": "$PUBLIC_IP",
-
-  "os": {
-    "name": "$OS_NAME",
-    "kernel": "$KERNEL"
-  },
 
   "cpu": {
     "usage_percent": "$CPU_USAGE"
@@ -153,15 +135,13 @@ JSON_PAYLOAD=$(cat <<EOF
   "memory": {
     "total_mb": "$MEM_TOTAL",
     "used_mb": "$MEM_USED",
-    "free_mb": "$MEM_FREE",
-    "usage_percent": "$MEM_PERCENT"
+    "available_mb": "$MEM_AVAILABLE"
   },
 
   "disk": {
-    "total": "$DISK_TOTAL",
-    "used": "$DISK_USED",
-    "available": "$DISK_AVAIL",
-    "usage_percent": "$DISK_PERCENT"
+    "total_mb": "$DISK_TOTAL",
+    "used_mb": "$DISK_USED",
+    "available_mb": "$DISK_AVAILABLE"
   },
 
   "network": {
@@ -173,14 +153,14 @@ JSON_PAYLOAD=$(cat <<EOF
     },
 
     "rate": {
-      "rx_mbps": "$RX_RATE_MBPS",
-      "tx_mbps": "$TX_RATE_MBPS"
+      "rx_mbps": "$RX_MBPS",
+      "tx_mbps": "$TX_MBPS"
     }
   },
 
   "system": {
     "load_average": "$LOAD_AVG",
-    "uptime": "$UPTIME"
+    "uptime_seconds": "$UPTIME_SECONDS"
   }
 }
 EOF
@@ -189,14 +169,11 @@ EOF
 # =========================================================
 # Send Data
 # =========================================================
-HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+curl -s \
     -X POST "$API_URL" \
     -H "Content-Type: application/json" \
-    --data "$JSON_PAYLOAD")
+    --data "$JSON_PAYLOAD" \
+    >/dev/null 2>&1
 
-# =========================================================
-# Output
-# =========================================================
+# Optional debug
 echo "$JSON_PAYLOAD"
-echo ""
-echo "HTTP Response: $HTTP_RESPONSE"
