@@ -1,49 +1,77 @@
 #!/usr/bin/env bash
 
 # =========================================================
-# Ultra Lightweight Linux Monitoring Script
+# MetroVPS Lightweight System Usage Agent
 #
 # Features:
-# - Minimal CPU usage
+# - Extremely lightweight
 # - No sleep
 # - No top/free/vmstat
-# - Uses only /proc and /sys
+# - Uses /proc and /sys only
 # - Works on almost all Linux distributions
+# - Sends usage metrics every minute
 #
-# Collects:
-# - CPU Usage %
-# - RAM Usage
-# - Disk Usage
-# - Network Total Usage
-# - Network Current RX/TX Rate
+# Usage:
+#   ./system-usage.sh YOUR_SERVER_TOKEN
+#
+# Recommended Cron:
+#   * * * * * /opt/metrovps/system-usage.sh TOKEN >/dev/null 2>&1
 # =========================================================
 
-API_URL="https://invenetory-agent.metrovps.com/api/system/usage/collect"
+set +e
+export LC_ALL=C
 
-STATE_FILE="/tmp/monitor_net_state"
-CPU_STATE_FILE="/tmp/monitor_cpu_state"
+# ---------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------
 
-HOSTNAME=$(hostname)
+TOKEN="$1"
+
+if [ -z "$TOKEN" ]; then
+    echo "Usage: $0 <SERVER_TOKEN>"
+    exit 1
+fi
+
+API_URL="https://invenetory-agent.metrovps.com/api/system-usage"
+
+API_ENDPOINT="${API_URL}?token=${TOKEN}"
+
+STATE_DIR="/tmp/metrovps-monitor"
+
+NET_STATE_FILE="${STATE_DIR}/net_state"
+CPU_STATE_FILE="${STATE_DIR}/cpu_state"
+
+mkdir -p "$STATE_DIR"
+
+# ---------------------------------------------------------
+# BASIC INFO
+# ---------------------------------------------------------
+
+HOSTNAME=$(hostname 2>/dev/null || echo "")
+
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# =========================================================
-# Detect Main Interface
-# =========================================================
+# ---------------------------------------------------------
+# DETECT MAIN INTERFACE
+# ---------------------------------------------------------
+
 INTERFACE=$(ip route 2>/dev/null | awk '/default/ {print $5}' | head -n1)
 
 if [ -z "$INTERFACE" ]; then
     INTERFACE=$(ls /sys/class/net | grep -v lo | head -n1)
 fi
 
-# =========================================================
-# CPU Usage
-# =========================================================
+# ---------------------------------------------------------
+# CPU USAGE
+# ---------------------------------------------------------
+
+CPU_USAGE="0"
+
 read cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
 
 TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
-IDLE=$((idle + iowait))
 
-CPU_USAGE="0"
+IDLE=$((idle + iowait))
 
 if [ -f "$CPU_STATE_FILE" ]; then
 
@@ -53,47 +81,58 @@ if [ -f "$CPU_STATE_FILE" ]; then
     DIFF_IDLE=$((IDLE - PREV_IDLE))
 
     if [ "$DIFF_TOTAL" -gt 0 ]; then
+
         CPU_USAGE=$(awk "BEGIN {printf \"%.2f\", (1 - $DIFF_IDLE/$DIFF_TOTAL) * 100}")
+
     fi
 fi
 
 echo "$TOTAL $IDLE" > "$CPU_STATE_FILE"
 
-# =========================================================
-# Memory Usage
-# =========================================================
+# ---------------------------------------------------------
+# MEMORY
+# ---------------------------------------------------------
+
 MEM_TOTAL=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+
 MEM_AVAILABLE=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
 
 MEM_USED=$((MEM_TOTAL - MEM_AVAILABLE))
 
-# =========================================================
-# Disk Usage
-# =========================================================
+# ---------------------------------------------------------
+# DISK
+# ---------------------------------------------------------
+
 DISK_TOTAL=$(df -BM / | awk 'NR==2 {gsub("M","",$2); print $2}')
+
 DISK_USED=$(df -BM / | awk 'NR==2 {gsub("M","",$3); print $3}')
+
 DISK_AVAILABLE=$(df -BM / | awk 'NR==2 {gsub("M","",$4); print $4}')
 
-# =========================================================
-# Network Total Counters
-# =========================================================
+# ---------------------------------------------------------
+# NETWORK TOTAL
+# ---------------------------------------------------------
+
 RX_BYTES=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes 2>/dev/null || echo 0)
+
 TX_BYTES=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes 2>/dev/null || echo 0)
 
 RX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $RX_BYTES/1024/1024}")
+
 TX_TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", $TX_BYTES/1024/1024}")
 
-# =========================================================
-# Network Speed Calculation
-# =========================================================
+# ---------------------------------------------------------
+# NETWORK SPEED
+# ---------------------------------------------------------
+
 RX_MBPS="0"
 TX_MBPS="0"
 
 CURRENT_TIME=$(date +%s)
 
-if [ -f "$STATE_FILE" ]; then
+if [ -f "$NET_STATE_FILE" ]; then
 
-    read OLD_RX OLD_TX OLD_TIME < "$STATE_FILE"
+    read OLD_RX OLD_TX OLD_TIME < "$NET_STATE_FILE"
 
     TIME_DIFF=$((CURRENT_TIME - OLD_TIME))
 
@@ -103,30 +142,38 @@ if [ -f "$STATE_FILE" ]; then
         TX_DIFF=$((TX_BYTES - OLD_TX))
 
         RX_MBPS=$(awk "BEGIN {printf \"%.2f\", ($RX_DIFF * 8) / $TIME_DIFF / 1024 / 1024}")
-        TX_MBPS=$(awk "BEGIN {printf \"%.2f\", ($TX_DIFF * 8) / $TIME_DIFF / 1024 / 1024}")
 
+        TX_MBPS=$(awk "BEGIN {printf \"%.2f\", ($TX_DIFF * 8) / $TIME_DIFF / 1024 / 1024}")
     fi
 fi
 
-echo "$RX_BYTES $TX_BYTES $CURRENT_TIME" > "$STATE_FILE"
+echo "$RX_BYTES $TX_BYTES $CURRENT_TIME" > "$NET_STATE_FILE"
 
-# =========================================================
-# Load Average
-# =========================================================
+# ---------------------------------------------------------
+# LOAD
+# ---------------------------------------------------------
+
 LOAD_AVG=$(awk '{print $1" "$2" "$3}' /proc/loadavg)
 
-# =========================================================
-# Uptime
-# =========================================================
+# ---------------------------------------------------------
+# UPTIME
+# ---------------------------------------------------------
+
 UPTIME_SECONDS=$(cut -d. -f1 /proc/uptime)
 
-# =========================================================
-# JSON Payload
-# =========================================================
+# ---------------------------------------------------------
+# BUILD JSON
+# ---------------------------------------------------------
+
 JSON_PAYLOAD=$(cat <<EOF
 {
-  "hostname": "$HOSTNAME",
   "timestamp": "$TIMESTAMP",
+
+  "system": {
+    "hostname": "$HOSTNAME",
+    "uptime_seconds": "$UPTIME_SECONDS",
+    "load_average": "$LOAD_AVG"
+  },
 
   "cpu": {
     "usage_percent": "$CPU_USAGE"
@@ -156,24 +203,34 @@ JSON_PAYLOAD=$(cat <<EOF
       "rx_mbps": "$RX_MBPS",
       "tx_mbps": "$TX_MBPS"
     }
-  },
-
-  "system": {
-    "load_average": "$LOAD_AVG",
-    "uptime_seconds": "$UPTIME_SECONDS"
   }
 }
 EOF
 )
 
-# =========================================================
-# Send Data
-# =========================================================
-curl -s \
-    -X POST "$API_URL" \
-    -H "Content-Type: application/json" \
-    --data "$JSON_PAYLOAD" \
-    >/dev/null 2>&1
+# ---------------------------------------------------------
+# SEND DATA
+# ---------------------------------------------------------
 
-# Optional debug
-echo "$JSON_PAYLOAD"
+if command -v curl >/dev/null 2>&1; then
+
+    curl -s \
+        -X POST "$API_ENDPOINT" \
+        -H "Content-Type: application/json" \
+        --data "$JSON_PAYLOAD" \
+        >/dev/null 2>&1
+
+elif command -v wget >/dev/null 2>&1; then
+
+    TMP_FILE="/tmp/metrovps_usage_$$.json"
+
+    echo "$JSON_PAYLOAD" > "$TMP_FILE"
+
+    wget -q \
+        --header="Content-Type: application/json" \
+        --post-file="$TMP_FILE" \
+        -O /dev/null \
+        "$API_ENDPOINT"
+
+    rm -f "$TMP_FILE"
+fi
