@@ -125,10 +125,48 @@ self_update() {
 
     else
 
-        echo "Failed to download update."
+        echo "Failed to download inventory agent update."
     fi
 
     rm -f "$TMP_SCRIPT"
+
+    # -----------------------------------------------------
+    # UPDATE SYSTEM USAGE AGENT
+    # -----------------------------------------------------
+
+    echo "Checking system usage agent updates..."
+
+    TMP_USAGE_SCRIPT="/tmp/system-usage-update.sh"
+
+    if command_exists curl; then
+
+        curl -fsSL "$USAGE_AGENT_URL" -o "$TMP_USAGE_SCRIPT"
+
+    elif command_exists wget; then
+
+        wget -qO "$TMP_USAGE_SCRIPT" "$USAGE_AGENT_URL"
+
+    else
+        echo "curl or wget required."
+        return
+    fi
+
+    if [ -s "$TMP_USAGE_SCRIPT" ]; then
+
+        chmod +x "$TMP_USAGE_SCRIPT"
+
+        cp "$TMP_USAGE_SCRIPT" "$USAGE_AGENT_SCRIPT"
+
+        chmod +x "$USAGE_AGENT_SCRIPT"
+
+        echo "System usage agent updated."
+
+    else
+
+        echo "Failed to download system usage agent update."
+    fi
+
+    rm -f "$TMP_USAGE_SCRIPT"
 }
 
 # ---------------------------------------------------------
