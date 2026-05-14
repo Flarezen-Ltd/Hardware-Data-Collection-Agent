@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 
 # =========================================================
-# MetroVPS Hardware Inventory Agent
+# MetroVPS Hardware Inventory + System Usage Agent
 #
 # Features:
-# - Self updating from remote URL
-# - Auto installs itself to /opt/metrovps/
-# - Sends inventory daily
-# - Auto installs cron
+# - Self updating
+# - Auto installs to /opt/metrovps/
+# - Daily hardware inventory collection
+# - 1-minute system usage collection
+# - Auto installs cron jobs
 # - Works on most Linux distributions
 #
 # Usage:
-#   curl -o install.sh https://your-domain.com/inventory-agent.sh
 #   chmod +x install.sh
 #   ./install.sh YOUR_SERVER_TOKEN
-#
 # =========================================================
 
 set +e
@@ -31,24 +30,24 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
-# API Endpoint
 BASE_API_URL="https://invenetory-agent.metrovps.com/api/hardware-inventory"
 
-# Script Update URL
 SCRIPT_UPDATE_URL="https://raw.githubusercontent.com/Flarezen-Ltd/Hardware-Data-Collection-Agent/refs/heads/main/inventory-agenet.sh"
 
-# Installation Path
+USAGE_AGENT_URL="https://raw.githubusercontent.com/Flarezen-Ltd/Hardware-Data-Collection-Agent/refs/heads/main/system-usage.sh"
+
 INSTALL_DIR="/opt/metrovps"
+
 INSTALL_SCRIPT="${INSTALL_DIR}/inventory-agent.sh"
 
-# Runtime
+USAGE_AGENT_SCRIPT="${INSTALL_DIR}/system-usage.sh"
+
 TMP_JSON="/tmp/system_inventory_$$.json"
 
-# Final API URL
 API_ENDPOINT="${BASE_API_URL}?token=${TOKEN}"
 
 # ---------------------------------------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # ---------------------------------------------------------
 
 command_exists() {
@@ -83,9 +82,10 @@ self_install() {
     if [ -f "$CURRENT_SCRIPT" ] && [ "$CURRENT_SCRIPT" != "$INSTALL_SCRIPT" ]; then
 
         cp "$CURRENT_SCRIPT" "$INSTALL_SCRIPT"
+
         chmod +x "$INSTALL_SCRIPT"
 
-        echo "Installed agent to:"
+        echo "Installed inventory agent:"
         echo "$INSTALL_SCRIPT"
     fi
 }
@@ -96,7 +96,7 @@ self_install() {
 
 self_update() {
 
-    echo "Checking for script updates..."
+    echo "Checking inventory agent updates..."
 
     TMP_SCRIPT="/tmp/inventory-agent-update.sh"
 
@@ -109,7 +109,7 @@ self_update() {
         wget -qO "$TMP_SCRIPT" "$SCRIPT_UPDATE_URL"
 
     else
-        echo "curl or wget required for updates."
+        echo "curl or wget required."
         return
     fi
 
@@ -121,12 +121,43 @@ self_update() {
 
         chmod +x "$INSTALL_SCRIPT"
 
-        echo "Agent updated successfully."
+        echo "Inventory agent updated."
+
     else
+
         echo "Failed to download update."
     fi
 
     rm -f "$TMP_SCRIPT"
+}
+
+# ---------------------------------------------------------
+# INSTALL SYSTEM USAGE AGENT
+# ---------------------------------------------------------
+
+install_usage_agent() {
+
+    echo "Installing system usage agent..."
+
+    mkdir -p "$INSTALL_DIR"
+
+    if command_exists curl; then
+
+        curl -fsSL "$USAGE_AGENT_URL" -o "$USAGE_AGENT_SCRIPT"
+
+    elif command_exists wget; then
+
+        wget -qO "$USAGE_AGENT_SCRIPT" "$USAGE_AGENT_URL"
+
+    else
+        echo "curl or wget required."
+        return
+    fi
+
+    chmod +x "$USAGE_AGENT_SCRIPT"
+
+    echo "Installed system usage agent:"
+    echo "$USAGE_AGENT_SCRIPT"
 }
 
 # ---------------------------------------------------------
@@ -135,15 +166,23 @@ self_update() {
 
 install_cron() {
 
-    CRON_CMD="0 2 * * * ${INSTALL_SCRIPT} ${TOKEN} >/dev/null 2>&1"
+    INVENTORY_CRON="0 2 * * * ${INSTALL_SCRIPT} ${TOKEN} >/dev/null 2>&1"
+
+    USAGE_CRON="* * * * * ${USAGE_AGENT_SCRIPT} ${TOKEN} >/dev/null 2>&1"
 
     (
-        crontab -l 2>/dev/null | grep -v "${INSTALL_SCRIPT}"
-        echo "$CRON_CMD"
+        crontab -l 2>/dev/null | \
+        grep -v "${INSTALL_SCRIPT}" | \
+        grep -v "${USAGE_AGENT_SCRIPT}"
+
+        echo "$INVENTORY_CRON"
+        echo "$USAGE_CRON"
+
     ) | crontab -
 
-    echo "Daily cron installed:"
-    echo "$CRON_CMD"
+    echo "Installed cron jobs:"
+    echo "$INVENTORY_CRON"
+    echo "$USAGE_CRON"
 }
 
 # ---------------------------------------------------------
@@ -164,7 +203,9 @@ OS_NAME=""
 OS_VERSION=""
 
 if [ -f /etc/os-release ]; then
+
     OS_NAME=$(grep '^NAME=' /etc/os-release | cut -d= -f2- | tr -d '"')
+
     OS_VERSION=$(grep '^VERSION=' /etc/os-release | cut -d= -f2- | tr -d '"')
 fi
 
@@ -195,8 +236,11 @@ MOTHERBOARD_VENDOR=$(cat /sys/class/dmi/id/board_vendor 2>/dev/null || echo "")
 # ---------------------------------------------------------
 
 CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2- | trim)
+
 CPU_THREADS=$(grep -c ^processor /proc/cpuinfo 2>/dev/null)
+
 CPU_CORES=$(grep -m1 "cpu cores" /proc/cpuinfo 2>/dev/null | cut -d: -f2- | trim)
+
 CPU_FREQ=$(grep -m1 "cpu MHz" /proc/cpuinfo 2>/dev/null | cut -d: -f2- | trim)
 
 CPU_SOCKETS=""
@@ -210,7 +254,9 @@ fi
 # ---------------------------------------------------------
 
 TOTAL_RAM=$(awk '/MemTotal/ {printf "%.2f GB", $2/1024/1024}' /proc/meminfo 2>/dev/null)
+
 AVAILABLE_RAM=$(awk '/MemAvailable/ {printf "%.2f GB", $2/1024/1024}' /proc/meminfo 2>/dev/null)
+
 SWAP_TOTAL=$(awk '/SwapTotal/ {printf "%.2f GB", $2/1024/1024}' /proc/meminfo 2>/dev/null)
 
 # ---------------------------------------------------------
@@ -249,8 +295,11 @@ fi
 PUBLIC_IP=""
 
 if command_exists curl; then
+
     PUBLIC_IP=$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null)
+
 elif command_exists wget; then
+
     PUBLIC_IP=$(wget -qO- --timeout=5 https://ifconfig.me 2>/dev/null)
 fi
 
@@ -341,7 +390,7 @@ echo "Inventory sent."
 
 self_install
 self_update
+install_usage_agent
 install_cron
 
-# Cleanup
 rm -f "$TMP_JSON"
