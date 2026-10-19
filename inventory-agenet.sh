@@ -30,7 +30,7 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
-BASE_API_URL="https://invenetory-agent.metrovps.com/api/hardware-inventory"
+BASE_API_URL="http://invenetory-agent.metrovps.com:1880/api/hardware-inventory"
 
 SCRIPT_UPDATE_URL="https://raw.githubusercontent.com/Flarezen-Ltd/Hardware-Data-Collection-Agent/refs/heads/main/inventory-agenet.sh"
 
